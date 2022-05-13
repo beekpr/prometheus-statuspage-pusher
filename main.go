@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -16,6 +19,16 @@ import (
 
 	"github.com/prometheus/common/model"
 )
+
+var prometheusTimes = promauto.NewHistogram(prometheus.HistogramOpts{
+	Name: "statuspage_pusher_prometheus_requests",
+	Help: "The response times of prometheus requests",
+})
+
+var statuspageTimes = promauto.NewHistogram(prometheus.HistogramOpts{
+	Name: "statuspage_pusher_statuspage_requests",
+	Help: "The response times of statuspage.io requests",
+})
 
 var (
 	prometheusURL       = flag.String("prom", "http://localhost:9090", "URL of Prometheus server")
@@ -34,6 +47,11 @@ var (
 	queryConfig map[string]string
 )
 
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(200)
+	_, _ = fmt.Fprintf(w, "OK")
+}
+
 func main() {
 	flag.Parse()
 	if lvl, err := log.ParseLevel(*logLevel); err != nil {
@@ -49,6 +67,10 @@ func main() {
 	if err := yaml.Unmarshal(qcd, &queryConfig); err != nil {
 		log.Fatalf("Couldn't parse config file: %s", err)
 	}
+
+	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/healthz", healthz)
+	go http.ListenAndServe(":8080", nil)
 
 	if *backfillDuration != "" {
 		md, err := model.ParseDuration(*backfillDuration)
@@ -73,11 +95,15 @@ func main() {
 func queryAndPush(backfill *time.Duration) {
 	log.Infof("Started to query and pushing metrics")
 
+	start := time.Now()
 	metrics := queryPrometheus(backfill, *metricValueRounding)
+	prometheusTimes.Observe(time.Since(start).Seconds())
 	chunkedMetrics := chunkMetrics(metrics)
 
 	for _, m := range chunkedMetrics {
+		start = time.Now()
 		err := pushStatuspage(m)
+		statuspageTimes.Observe(time.Since(start).Seconds())
 		if err != nil {
 			log.Error(err)
 		}
