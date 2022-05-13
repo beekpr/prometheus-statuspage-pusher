@@ -1,11 +1,11 @@
-FROM golang:1.16 as builder
+FROM golang:1.17 as builder
 
 WORKDIR /src
 COPY . .
 
 ENV CGO_ENABLED=0
 
-RUN go build -o prometheus-statuspage-pusher
+RUN go build -o prometheus-statuspage-pusher .
 
 FROM alpine
 

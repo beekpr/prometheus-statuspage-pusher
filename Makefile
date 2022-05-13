@@ -1,5 +1,5 @@
 build:
-	go build -o prometheus-statuspage-pusher main.go
+	go build -o prometheus-statuspage-pusher .
 
 deps:
 	go mod verify
