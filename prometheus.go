@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -14,31 +13,26 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-func queryPrometheus(backfill *time.Duration, decimal uint) statuspageMetrics {
+func queryPrometheus() componentStatus {
 	client, err := api.NewClient(api.Config{Address: *prometheusURL})
 	if err != nil {
 		log.Fatalf("Couldn't create Prometheus client: %s", err)
 	}
 	api := prometheus.NewAPI(client)
 
-	metrics := make(statuspageMetrics)
+	metrics := make(componentStatus)
 	for metricID, query := range queryConfig {
 		ctxlog := log.WithFields(log.Fields{
 			"metric_id": metricID,
-			"backfill":  backfill,
 		})
 
 		var (
 			err          error
 			warnings     prometheus.Warnings
-			metricPoints []statuspageMetricPoint
+			metricPoints []Status
 		)
 
-		if backfill == nil {
-			metricPoints, warnings, err = queryInstant(api, query, decimal, ctxlog)
-		} else {
-			metricPoints, warnings, err = queryRange(api, query, decimal, backfill, ctxlog)
-		}
+		metricPoints, warnings, err = queryInstant(api, query, ctxlog)
 
 		for _, w := range warnings {
 			ctxlog.Warnf("Prometheus query warning: %s", w)
@@ -55,7 +49,7 @@ func queryPrometheus(backfill *time.Duration, decimal uint) statuspageMetrics {
 	return metrics
 }
 
-func queryInstant(api prometheus.API, query string, decimal uint, logger *log.Entry) ([]statuspageMetricPoint, prometheus.Warnings, error) {
+func queryInstant(api prometheus.API, query string, logger *log.Entry) ([]Status, prometheus.Warnings, error) {
 	now := time.Now()
 	response, warnings, err := api.Query(context.Background(), query, now)
 
@@ -75,70 +69,21 @@ func queryInstant(api prometheus.API, query string, decimal uint, logger *log.En
 	value := vec[0].Value
 	logger.Infof("Query result: %s", value)
 
+	status := "operational"
+
+	if value == 1 {
+		status = "operational"
+	} else {
+		status = "major_outage"
+	}
+
 	if math.IsNaN(float64(value)) {
 		return nil, warnings, fmt.Errorf("Invalid metric value NaN")
 	}
 
-	return []statuspageMetricPoint{
+	return []Status{
 		{
-			Timestamp: int64(vec[0].Timestamp / 1000),
-			Value:     json.Number(fmt.Sprintf("%.*f", decimal, value)),
+			Status: status,
 		},
 	}, warnings, nil
-}
-
-func queryRange(api prometheus.API, query string, decimal uint, backfill *time.Duration, logger *log.Entry) ([]statuspageMetricPoint, prometheus.Warnings, error) {
-	now := time.Now()
-	start := now.Add(-*backfill)
-	var (
-		end          time.Time
-		promWarnings prometheus.Warnings
-		metricPoints []statuspageMetricPoint
-	)
-
-	for start.Before(now) {
-		end = start.Add(24 * time.Hour) // 24h as a step
-		if end.After(now) {
-			end = now
-		}
-
-		logger.Infof("Querying metrics from %s to %s with step %s", start.Format(time.RFC3339), end.Format(time.RFC3339), *metricInterval)
-		response, warnings, err := api.QueryRange(context.Background(), query, prometheus.Range{
-			Start: start,
-			End:   end,
-			Step:  *metricInterval,
-		})
-		promWarnings = append(promWarnings, warnings...)
-
-		if err != nil {
-			return nil, promWarnings, fmt.Errorf("Couldn't query Prometheus: %w", err)
-		}
-
-		if response.Type() != model.ValMatrix {
-			return nil, promWarnings, fmt.Errorf("Expected result type %s, got %s", model.ValMatrix, response.Type())
-		}
-
-		mtx := response.(model.Matrix)
-		if l := mtx.Len(); l != 1 {
-			return nil, promWarnings, fmt.Errorf("Expected single time serial, got %d", l)
-		}
-
-		logger.Infof("Got %d samples", len(mtx[0].Values))
-		logger.Debugf("Query result: %v", mtx[0].Values)
-
-		for _, v := range mtx[0].Values {
-			if math.IsNaN(float64(v.Value)) {
-				logger.Warn("Invalid metric value NaN")
-				continue
-			}
-			metricPoints = append(metricPoints, statuspageMetricPoint{
-				Timestamp: int64(v.Timestamp / 1000),
-				Value:     json.Number(fmt.Sprintf("%.*f", decimal, v.Value)),
-			})
-		}
-
-		start = end.Add(1 * time.Millisecond)
-	}
-
-	return metricPoints, promWarnings, nil
 }

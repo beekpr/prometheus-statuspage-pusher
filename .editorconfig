@@ -1,11 +1,26 @@
 root = true
 
 [*]
-charset = utf-8
-end_of_line = lf
-insert_final_newline = true
+indent_style             = space
+indent_size              = 4
+end_of_line              = lf
+charset                  = utf-8
+space_redirects          = true
+switch_case_indent       = true
 trim_trailing_whitespace = true
+insert_final_newline     = true
 
-[*.{json,yml,yaml}]
-indent_style = space
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{tf,yml,yaml}]
 indent_size = 2
+
+[*.{json,json5}]
+indent_size = 2
+
+[*.rego]
+indent_size = 2
+
+[{Makefile,*.mk}]
+indent_style = tab

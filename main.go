@@ -5,19 +5,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/prometheus/common/model"
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v3"
 )
 
 var prometheusTimes = promauto.NewHistogram(prometheus.HistogramOpts{
@@ -31,14 +29,12 @@ var statuspageTimes = promauto.NewHistogram(prometheus.HistogramOpts{
 })
 
 var (
-	prometheusURL       = flag.String("prom", "http://localhost:9090", "URL of Prometheus server")
-	statusPageAPIKey    = flag.String("apikey", "", "Statuspage API key")
-	statusPageID        = flag.String("pageid", "", "Statuspage page ID")
-	queryConfigFile     = flag.String("config", "queries.yaml", "Query config file")
-	metricInterval      = flag.Duration("interval", 30*time.Second, "Metric push interval")
-	metricValueRounding = flag.Uint("rounding", 6, "Round metric values to specific decimal places")
-	backfillDuration    = flag.String("backfill", "", "Backfill the data points in, for example, 5d")
-	logLevel            = flag.String("log-level", "info", "Log level accepted by Logrus, for example, \"error\", \"warn\", \"info\", \"debug\", ...")
+	prometheusURL    = flag.String("prom", "http://localhost:9090", "URL of Prometheus server")
+	statusPageAPIKey = flag.String("apikey", "", "Statuspage API key")
+	statusPageID     = flag.String("pageid", "", "Statuspage page ID")
+	queryConfigFile  = flag.String("config", "queries.yaml", "Query config file")
+	metricInterval   = flag.Duration("interval", 300*time.Second, "Metric push interval")
+	logLevel         = flag.String("log-level", "info", "Log level accepted by Logrus, for example, \"error\", \"warn\", \"info\", \"debug\", ...")
 
 	httpClient = &http.Client{
 		Timeout: 30 * time.Second,
@@ -72,63 +68,41 @@ func main() {
 	http.HandleFunc("/healthz", healthz)
 	go http.ListenAndServe(":8080", nil)
 
-	if *backfillDuration != "" {
-		md, err := model.ParseDuration(*backfillDuration)
-		if err != nil {
-			log.Fatalf("Incorrect duration format: %s", *backfillDuration)
-		}
-		d := time.Duration(md)
-		queryAndPush(&d)
-	} else {
-		queryAndPush(nil)
-	}
-
 	ticker := time.NewTicker(*metricInterval)
 	for {
 		select {
 		case <-ticker.C:
-			go queryAndPush(nil)
+			go queryAndPush()
 		}
 	}
 }
 
-func queryAndPush(backfill *time.Duration) {
+func queryAndPush() {
 	log.Infof("Started to query and pushing metrics")
 
 	start := time.Now()
-	metrics := queryPrometheus(backfill, *metricValueRounding)
-	prometheusTimes.Observe(time.Since(start).Seconds())
-	chunkedMetrics := chunkMetrics(metrics)
+	metrics := queryPrometheus()
 
-	for _, m := range chunkedMetrics {
-		start = time.Now()
-		err := pushStatuspage(m)
-		statuspageTimes.Observe(time.Since(start).Seconds())
-		if err != nil {
-			log.Error(err)
-		}
+	prometheusTimes.Observe(time.Since(start).Seconds())
+
+	for id, val := range metrics {
+		pushStatuspage(id, val[0])
 	}
 
 	log.Infof("Finished querying and pushing metrics")
 }
 
-func pushStatuspage(metrics statuspageMetrics) error {
-	jsonContents, err := json.Marshal(statuspageMetricsPayload{Data: metrics})
+func pushStatuspage(id string, status Status) error {
+	jsonContents, err := json.Marshal(Component{Status: status})
 	if err != nil {
 		return err
 	}
 
 	log.Debugf("Metrics payload pushing to Statuspage: %s", jsonContents)
 
-	metricIDs := make([]string, 0, len(metrics))
-	for id := range metrics {
-		metricIDs = append(metricIDs, id)
-	}
-
-	log.Infof("Pushing metrics: %s", strings.Join(metricIDs, ", "))
-
-	url := fmt.Sprintf("https://api.statuspage.io/v1/pages/%s/metrics/data", url.PathEscape(*statusPageID))
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonContents))
+	log.Infof("Pushing metric: %s", id)
+	url := fmt.Sprintf("https://api.statuspage.io/v1/pages/%s/components/%s", url.PathEscape(*statusPageID), url.PathEscape(id))
+	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(jsonContents))
 	if err != nil {
 		return err
 	}

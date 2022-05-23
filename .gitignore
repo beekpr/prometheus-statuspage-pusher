@@ -1,4 +1,5 @@
 .idea
 /prometheus-statuspage-pusher
 /config.yaml
-/.vscode
+.vscode
+trash/
